@@ -1,13 +1,10 @@
 import streamlit as st
 import replicate
 import requests
-import cloudinary
-import cloudinary.uploader
 from PIL import Image
 import io
 import os
-from io import BytesIO
-import time
+import base64
 
 # 페이지 설정
 st.set_page_config(
@@ -16,18 +13,9 @@ st.set_page_config(
     layout="wide"
 )
 
-# Cloudinary 설정
-cloudinary.config( 
-    cloud_name = "demo", 
-    api_key = "YOUR_CLOUDINARY_API_KEY", 
-    api_secret = "YOUR_CLOUDINARY_API_SECRET" 
-)
-
 # 세션 상태 초기화
 if 'api_key' not in st.session_state:
     st.session_state.api_key = ''
-if 'processed_image' not in st.session_state:
-    st.session_state.processed_image = None
 
 # 메인 페이지 제목
 st.title("🖼️ 이미지 배경 제거 도구")
@@ -55,46 +43,23 @@ with st.sidebar:
     3. '배경 제거' 버튼을 클릭하세요
     """)
 
-def upload_to_cloudinary(file_data):
-    """Cloudinary에 이미지 업로드"""
-    try:
-        response = cloudinary.uploader.upload(file_data)
-        return response['secure_url']
-    except Exception as e:
-        st.error(f"이미지 업로드 중 오류 발생: {str(e)}")
-        return None
+def encode_image_to_base64(image_bytes):
+    """이미지를 base64로 인코딩"""
+    return base64.b64encode(image_bytes).decode('utf-8')
 
-def process_uploaded_file(uploaded_file):
-    try:
-        # 파일을 바이트로 읽기
-        file_bytes = uploaded_file.getvalue()
-        
-        # Cloudinary에 업로드
-        image_url = upload_to_cloudinary(file_bytes)
-        
-        if image_url:
-            return image_url
-        else:
-            st.error("이미지 업로드에 실패했습니다. 다시 시도해주세요.")
-            return None
-    except Exception as e:
-        st.error(f"이미지 처리 중 오류 발생: {str(e)}")
-        return None
-
-def remove_background(image_url, api_key):
+def remove_background(image_data, api_key):
     try:
         os.environ["REPLICATE_API_TOKEN"] = api_key
-        for attempt in range(3):  # 최대 3번 재시도
-            try:
-                output = replicate.run(
-                    "fottoai/remove-bg:d20cb34668e219d0a0785a9f61c212f5b8650ebe0f0d0c74812c39ee52ae7ba9",
-                    input={"image_url": image_url}
-                )
-                return output
-            except Exception as e:
-                if attempt == 2:  # 마지막 시도였다면
-                    raise e
-                time.sleep(1)  # 재시도 전 대기
+        
+        # 이미지를 base64로 인코딩
+        base64_image = encode_image_to_base64(image_data)
+        image_url = f"data:image/jpeg;base64,{base64_image}"
+        
+        output = replicate.run(
+            "fottoai/remove-bg:d20cb34668e219d0a0785a9f61c212f5b8650ebe0f0d0c74812c39ee52ae7ba9",
+            input={"image_url": image_url}
+        )
+        return output
     except Exception as e:
         st.error(f"배경 제거 중 오류 발생: {str(e)}")
         return None
@@ -122,29 +87,28 @@ if uploaded_file is not None:
             else:
                 try:
                     with st.spinner("배경을 제거하는 중..."):
-                        # 이미지 업로드 처리
-                        image_url = process_uploaded_file(uploaded_file)
+                        # 이미지 데이터 준비
+                        image_bytes = uploaded_file.getvalue()
                         
-                        if image_url:
-                            # 배경 제거 실행
-                            result = remove_background(image_url, st.session_state.api_key)
-                            
-                            if result:
-                                with col2:
-                                    st.subheader("결과 이미지")
-                                    st.image(result, use_container_width=True)
-                                    
-                                    # 결과 이미지 다운로드
-                                    try:
-                                        response = requests.get(result, timeout=30)
-                                        if response.status_code == 200:
-                                            st.download_button(
-                                                label="결과 이미지 다운로드",
-                                                data=response.content,
-                                                file_name="removed_background.png",
-                                                mime="image/png"
-                                            )
-                                    except requests.exceptions.RequestException:
-                                        st.error("이미지 다운로드 중 오류가 발생했습니다. 다시 시도해주세요.")
+                        # 배경 제거 실행
+                        result = remove_background(image_bytes, st.session_state.api_key)
+                        
+                        if result:
+                            with col2:
+                                st.subheader("결과 이미지")
+                                st.image(result, use_container_width=True)
+                                
+                                # 결과 이미지 다운로드
+                                try:
+                                    response = requests.get(result, timeout=30)
+                                    if response.status_code == 200:
+                                        st.download_button(
+                                            label="결과 이미지 다운로드",
+                                            data=response.content,
+                                            file_name="removed_background.png",
+                                            mime="image/png"
+                                        )
+                                except requests.exceptions.RequestException:
+                                    st.error("이미지 다운로드 중 오류가 발생했습니다. 다시 시도해주세요.")
                 except Exception as e:
                     st.error(f"처리 중 오류가 발생했습니다: {str(e)}")
