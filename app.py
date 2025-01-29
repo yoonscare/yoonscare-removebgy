@@ -5,6 +5,7 @@ from PIL import Image
 import io
 import os
 from io import BytesIO
+import time
 
 # 페이지 설정
 st.set_page_config(
@@ -16,6 +17,12 @@ st.set_page_config(
 # 세션 상태 초기화
 if 'api_key' not in st.session_state:
     st.session_state.api_key = ''
+if 'processed_image' not in st.session_state:
+    st.session_state.processed_image = None
+
+# 메인 페이지 제목
+st.title("🖼️ 이미지 배경 제거 도구")
+st.markdown("간단하게 이미지의 배경을 제거해보세요!")
 
 # 사이드바에 API 키 입력 필드 추가
 with st.sidebar:
@@ -27,10 +34,10 @@ with st.sidebar:
         help="https://replicate.com에서 API 키를 발급받을 수 있습니다."
     )
     
-    # API 키가 변경되었을 때만 세션 상태 업데이트
     if api_key_input != st.session_state.api_key:
         st.session_state.api_key = api_key_input
-        st.success("API 키가 저장되었습니다!")
+        if api_key_input:
+            st.success("API 키가 저장되었습니다!")
 
     st.markdown("""
     ### 사용 방법
@@ -39,32 +46,40 @@ with st.sidebar:
     3. '배경 제거' 버튼을 클릭하세요
     """)
 
-# 메인 페이지 제목
-st.title("🖼️ 이미지 배경 제거 도구")
-st.markdown("간단하게 이미지의 배경을 제거해보세요!")
+def retry_upload(file_data, max_retries=3):
+    """재시도 로직이 포함된 업로드 함수"""
+    for attempt in range(max_retries):
+        try:
+            files = {
+                'image': ('image.jpg', file_data, 'image/jpeg')
+            }
+            
+            response = requests.post(
+                'https://api.imgbb.com/1/upload',
+                params={'key': 'e2b77b1380511b353288b7b436927a6c'},
+                files=files,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                return response.json()['data']['url']
+            
+            time.sleep(1)  # 재시도 전 대기
+        except requests.exceptions.RequestException as e:
+            if attempt == max_retries - 1:
+                raise e
+            time.sleep(1)
+    return None
 
 def process_uploaded_file(uploaded_file):
     try:
-        # 이미지 데이터를 바이트로 읽기
         img_bytes = uploaded_file.getvalue()
+        image_url = retry_upload(img_bytes)
         
-        # multipart/form-data 형식으로 요청
-        files = {
-            'image': ('image.jpg', img_bytes, 'image/jpeg')
-        }
-        
-        response = requests.post(
-            'https://api.imgbb.com/1/upload',
-            params={'key': 'e2b77b1380511b353288b7b436927a6c'},
-            files=files,
-            timeout=30  # 타임아웃 30초로 설정
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            return result['data']['url']
+        if image_url:
+            return image_url
         else:
-            st.error(f"이미지 업로드 실패: {response.status_code}")
+            st.error("이미지 업로드에 실패했습니다. 다시 시도해주세요.")
             return None
     except Exception as e:
         st.error(f"이미지 처리 중 오류 발생: {str(e)}")
@@ -73,11 +88,17 @@ def process_uploaded_file(uploaded_file):
 def remove_background(image_url, api_key):
     try:
         os.environ["REPLICATE_API_TOKEN"] = api_key
-        output = replicate.run(
-            "fottoai/remove-bg:d20cb34668e219d0a0785a9f61c212f5b8650ebe0f0d0c74812c39ee52ae7ba9",
-            input={"image_url": image_url}
-        )
-        return output
+        for attempt in range(3):  # 최대 3번 재시도
+            try:
+                output = replicate.run(
+                    "fottoai/remove-bg:d20cb34668e219d0a0785a9f61c212f5b8650ebe0f0d0c74812c39ee52ae7ba9",
+                    input={"image_url": image_url}
+                )
+                return output
+            except Exception as e:
+                if attempt == 2:  # 마지막 시도였다면
+                    raise e
+                time.sleep(1)  # 재시도 전 대기
     except Exception as e:
         st.error(f"배경 제거 중 오류 발생: {str(e)}")
         return None
@@ -90,7 +111,7 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is not None:
-    # 컨테이너를 사용하여 이미지 표시
+    # 이미지 표시를 위한 컨테이너
     with st.container():
         col1, col2 = st.columns(2)
         
@@ -105,7 +126,7 @@ if uploaded_file is not None:
             else:
                 try:
                     with st.spinner("배경을 제거하는 중..."):
-                        # 이미지 업로드
+                        # 이미지 업로드 처리
                         image_url = process_uploaded_file(uploaded_file)
                         
                         if image_url:
@@ -117,16 +138,17 @@ if uploaded_file is not None:
                                     st.subheader("결과 이미지")
                                     st.image(result, use_container_width=True)
                                     
-                                    # 다운로드 버튼 추가
-                                    response = requests.get(result, timeout=30)
-                                    if response.status_code == 200:
-                                        st.download_button(
-                                            label="결과 이미지 다운로드",
-                                            data=response.content,
-                                            file_name="removed_background.png",
-                                            mime="image/png"
-                                        )
-                except requests.exceptions.RequestException as e:
-                    st.error(f"네트워크 오류가 발생했습니다: {str(e)}")
+                                    # 결과 이미지 다운로드
+                                    try:
+                                        response = requests.get(result, timeout=30)
+                                        if response.status_code == 200:
+                                            st.download_button(
+                                                label="결과 이미지 다운로드",
+                                                data=response.content,
+                                                file_name="removed_background.png",
+                                                mime="image/png"
+                                            )
+                                    except requests.exceptions.RequestException:
+                                        st.error("이미지 다운로드 중 오류가 발생했습니다. 다시 시도해주세요.")
                 except Exception as e:
                     st.error(f"처리 중 오류가 발생했습니다: {str(e)}")
