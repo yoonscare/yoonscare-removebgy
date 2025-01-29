@@ -1,6 +1,8 @@
 import streamlit as st
 import replicate
 import requests
+import cloudinary
+import cloudinary.uploader
 from PIL import Image
 import io
 import os
@@ -12,6 +14,13 @@ st.set_page_config(
     page_title="배경 제거 도구",
     page_icon="🖼️",
     layout="wide"
+)
+
+# Cloudinary 설정
+cloudinary.config( 
+    cloud_name = "demo", 
+    api_key = "YOUR_CLOUDINARY_API_KEY", 
+    api_secret = "YOUR_CLOUDINARY_API_SECRET" 
 )
 
 # 세션 상태 초기화
@@ -46,35 +55,22 @@ with st.sidebar:
     3. '배경 제거' 버튼을 클릭하세요
     """)
 
-def retry_upload(file_data, max_retries=3):
-    """재시도 로직이 포함된 업로드 함수"""
-    for attempt in range(max_retries):
-        try:
-            files = {
-                'image': ('image.jpg', file_data, 'image/jpeg')
-            }
-            
-            response = requests.post(
-                'https://api.imgbb.com/1/upload',
-                params={'key': 'e2b77b1380511b353288b7b436927a6c'},
-                files=files,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                return response.json()['data']['url']
-            
-            time.sleep(1)  # 재시도 전 대기
-        except requests.exceptions.RequestException as e:
-            if attempt == max_retries - 1:
-                raise e
-            time.sleep(1)
-    return None
+def upload_to_cloudinary(file_data):
+    """Cloudinary에 이미지 업로드"""
+    try:
+        response = cloudinary.uploader.upload(file_data)
+        return response['secure_url']
+    except Exception as e:
+        st.error(f"이미지 업로드 중 오류 발생: {str(e)}")
+        return None
 
 def process_uploaded_file(uploaded_file):
     try:
-        img_bytes = uploaded_file.getvalue()
-        image_url = retry_upload(img_bytes)
+        # 파일을 바이트로 읽기
+        file_bytes = uploaded_file.getvalue()
+        
+        # Cloudinary에 업로드
+        image_url = upload_to_cloudinary(file_bytes)
         
         if image_url:
             return image_url
